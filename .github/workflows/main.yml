@@ -3,221 +3,135 @@ name: Build luci-app-onliner IPK
 on:
   push:
     tags:
-      - 'v*'          # 推 tag 时触发，如 git tag v5.0-r1 && git push --tags
-  workflow_dispatch:  # 也可以在 Actions 页面手动触发
+      - 'v*'
+  workflow_dispatch:
 
-# ── 版本号从 tag 提取，手动触发时用 dev ──────────────────────
 env:
   PKG_NAME: luci-app-onliner
-  PKG_VERSION: "5.0"
+  ZIG_VERSION: "0.13.0"
 
 jobs:
   build:
-    name: "${{ matrix.arch }} (${{ matrix.libc }})"
+    name: "${{ matrix.openwrt_arch }}"
     runs-on: ubuntu-22.04
 
     strategy:
-      fail-fast: false   # 一个架构失败不影响其他
+      fail-fast: false
       matrix:
         include:
-          # ── MIPS (大端，OpenWrt 最常见的软路由/家用路由架构) ──
-          - arch: mips
-            libc: musl
-            triple: mips-linux-musl
+          - zig_target: mips-linux-musl
             openwrt_arch: mips_24kc
-            cflags: "-march=mips32r2 -mabi=32 -msoft-float"
+            zig_cpu: mips32r2
 
-          # ── MIPSEL (小端，MT7620/MT7621 等) ──────────────────
-          - arch: mipsel
-            libc: musl
-            triple: mipsel-linux-musl
+          - zig_target: mipsel-linux-musl
             openwrt_arch: mipsel_24kc
-            cflags: "-march=mips32r2 -mabi=32 -msoft-float"
+            zig_cpu: mips32r2
 
-          # ── ARM (armv7，斐讯/树莓派等) ───────────────────────
-          - arch: arm
-            libc: musl
-            triple: arm-linux-musleabihf
+          - zig_target: arm-linux-musleabihf
             openwrt_arch: arm_cortex-a7_neon-vfpv4
-            cflags: "-march=armv7-a -mfpu=vfpv3 -mfloat-abi=hard"
+            zig_cpu: cortex_a7
 
-          # ── AArch64 (ARM64，R2S/R4S/NanoPi 等) ──────────────
-          - arch: aarch64
-            libc: musl
-            triple: aarch64-linux-musl
+          - zig_target: aarch64-linux-musl
             openwrt_arch: aarch64_cortex-a53
-            cflags: "-march=armv8-a"
+            zig_cpu: cortex_a53
 
-          # ── x86_64 (软路由 PC，虚拟机) ───────────────────────
-          - arch: x86_64
-            libc: musl
-            triple: x86_64-linux-musl
+          - zig_target: x86_64-linux-musl
             openwrt_arch: x86_64
-            cflags: "-march=x86-64"
+            zig_cpu: x86_64
 
-          # ── RISC-V 64 (部分新款路由器) ───────────────────────
-          - arch: riscv64
-            libc: musl
-            triple: riscv64-linux-musl
+          - zig_target: riscv64-linux-musl
             openwrt_arch: riscv64_riscv64
-            cflags: "-march=rv64gc -mabi=lp64d"
+            zig_cpu: generic_rv64
 
     steps:
-      # ── 1. 检出代码 ────────────────────────────────────────
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ── 2. 解析版本号 ──────────────────────────────────────
       - name: Set version
-        id: version
+        id: ver
         run: |
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             TAG="${GITHUB_REF#refs/tags/v}"
-            # tag 格式期望 v5.0-r1，拆成 PKG_VERSION 和 PKG_RELEASE
             PKG_VERSION="${TAG%%-*}"
             PKG_RELEASE="${TAG##*-}"
             [ "$PKG_RELEASE" = "$TAG" ] && PKG_RELEASE="r1"
           else
-            PKG_VERSION="${{ env.PKG_VERSION }}"
+            PKG_VERSION="5.0"
             PKG_RELEASE="dev"
           fi
-          echo "PKG_VERSION=$PKG_VERSION" >> $GITHUB_OUTPUT
-          echo "PKG_RELEASE=$PKG_RELEASE" >> $GITHUB_OUTPUT
-          echo "PKG_FULLVER=${PKG_VERSION}-${PKG_RELEASE}" >> $GITHUB_OUTPUT
+          echo "ver=${PKG_VERSION}-${PKG_RELEASE}" >> $GITHUB_OUTPUT
 
-      # ── 3. 安装 musl-cross 工具链 ─────────────────────────
-      #    使用 musl.cc 预编译工具链，下载比安装 SDK 快 100 倍
-      - name: Install musl cross-compiler
+      - name: Setup Zig ${{ env.ZIG_VERSION }}
+        uses: mlugg/setup-zig@v1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Compile
         run: |
-          TRIPLE="${{ matrix.triple }}"
-          TOOLCHAIN_URL="https://musl.cc/${TRIPLE}-cross.tgz"
+          zig cc src/onliner.c \
+            -target ${{ matrix.zig_target }} \
+            -mcpu=${{ matrix.zig_cpu }} \
+            -O2 \
+            -static \
+            -o onliner \
+            -Wall -Wextra -Werror
 
-          echo "Downloading toolchain for ${TRIPLE}..."
-          curl -fsSL --retry 3 "$TOOLCHAIN_URL" | tar xz -C /opt
-          echo "/opt/${TRIPLE}-cross/bin" >> $GITHUB_PATH
-
-      # ── 4. 编译 onliner 二进制 ────────────────────────────
-      - name: Compile onliner
-        run: |
-          TRIPLE="${{ matrix.triple }}"
-          CC="${TRIPLE}-gcc"
-
-          ${CC} -O2 -Wall -Wextra -Werror \
-                ${{ matrix.cflags }} \
-                -static \
-                -o onliner \
-                src/onliner.c
-
-          # strip 缩小体积
-          ${TRIPLE}-strip onliner
-
-          echo "=== Binary info ==="
+          echo "=== binary info ==="
           file onliner
           ls -lh onliner
 
-      # ── 5. 手动打包 .ipk ──────────────────────────────────
-      #    ipk = gzip(tar(debian-binary, control.tar.gz, data.tar.gz))
       - name: Package IPK
+        id: pkg
         run: |
           set -e
-          TRIPLE="${{ matrix.triple }}"
-          OPENWRT_ARCH="${{ matrix.openwrt_arch }}"
-          PKG_VERSION="${{ steps.version.outputs.PKG_VERSION }}"
-          PKG_RELEASE="${{ steps.version.outputs.PKG_RELEASE }}"
-          PKG_FULLVER="${{ steps.version.outputs.PKG_FULLVER }}"
-          IPK_NAME="${{ env.PKG_NAME }}_${PKG_FULLVER}_${OPENWRT_ARCH}.ipk"
+          VER="${{ steps.ver.outputs.ver }}"
+          ARCH="${{ matrix.openwrt_arch }}"
+          IPK="${{ env.PKG_NAME }}_${VER}_${ARCH}.ipk"
 
-          WORK="$(pwd)/_ipk_work"
-          mkdir -p "$WORK/data" "$WORK/control_dir"
+          W="$(pwd)/_work"
+          mkdir -p "$W/data" "$W/ctl"
 
-          # ── data/ 树 ──────────────────────────────────────
-          # 二进制
-          install -Dm755 onliner \
-              "$WORK/data/usr/sbin/onliner"
+          install -Dm755 onliner                                                "$W/data/usr/sbin/onliner"
+          install -Dm755 files/etc/init.d/onliner                               "$W/data/etc/init.d/onliner"
+          install -Dm755 files/etc/uci-defaults/luci-app-onliner                "$W/data/etc/uci-defaults/luci-app-onliner"
+          install -Dm644 files/etc/onliner/devices.json                         "$W/data/etc/onliner/devices.json"
+          install -Dm644 files/usr/share/luci/menu.d/luci-app-onliner.json     "$W/data/usr/share/luci/menu.d/luci-app-onliner.json"
+          install -Dm644 files/usr/share/rpcd/acl.d/luci-app-onliner.json      "$W/data/usr/share/rpcd/acl.d/luci-app-onliner.json"
+          install -Dm644 files/usr/share/rpcd/ucode/luci.onliner               "$W/data/usr/share/rpcd/ucode/luci.onliner"
+          install -Dm644 files/www/luci-static/resources/view/onliner/main.js  "$W/data/www/luci-static/resources/view/onliner/main.js"
 
-          # init.d
-          install -Dm755 files/etc/init.d/onliner \
-              "$WORK/data/etc/init.d/onliner"
+          SIZE=$(du -sk "$W/data" | cut -f1)
 
-          # uci-defaults（安装后自动 enable+start）
-          install -Dm755 files/etc/uci-defaults/luci-app-onliner \
-              "$WORK/data/etc/uci-defaults/luci-app-onliner"
-
-          # 默认空设备列表
-          install -Dm644 files/etc/onliner/devices.json \
-              "$WORK/data/etc/onliner/devices.json"
-
-          # LuCI 菜单
-          install -Dm644 files/usr/share/luci/menu.d/luci-app-onliner.json \
-              "$WORK/data/usr/share/luci/menu.d/luci-app-onliner.json"
-
-          # rpcd ACL
-          install -Dm644 files/usr/share/rpcd/acl.d/luci-app-onliner.json \
-              "$WORK/data/usr/share/rpcd/acl.d/luci-app-onliner.json"
-
-          # ucode RPC 后端
-          install -Dm644 files/usr/share/rpcd/ucode/luci.onliner \
-              "$WORK/data/usr/share/rpcd/ucode/luci.onliner"
-
-          # 前端 JS
-          install -Dm644 files/www/luci-static/resources/view/onliner/main.js \
-              "$WORK/data/www/luci-static/resources/view/onliner/main.js"
-
-          # 计算安装大小（KB）
-          INSTALLED_SIZE=$(du -sk "$WORK/data" | cut -f1)
-
-          # ── control ───────────────────────────────────────
-          cat > "$WORK/control_dir/control" <<EOF
+          cat > "$W/ctl/control" << EOF
           Package: ${{ env.PKG_NAME }}
-          Version: ${PKG_FULLVER}
+          Version: ${VER}
           Depends: libc
           License: GPL-2.0-only
           Section: luci
-          Architecture: ${OPENWRT_ARCH}
-          Installed-Size: ${INSTALLED_SIZE}
-          Description: LuCI online device tracker (C binary, no jq dependency)
+          Architecture: ${ARCH}
+          Installed-Size: ${SIZE}
+          Description: LuCI online device tracker (C binary, no jq required)
           EOF
-          # 去除 heredoc 缩进
-          sed -i 's/^          //' "$WORK/control_dir/control"
+          sed -i 's/^          //' "$W/ctl/control"
 
-          # postinst（标准模板）
-          cat > "$WORK/control_dir/postinst" <<'POSTINST'
+          cat > "$W/ctl/postinst" << 'EOF'
           #!/bin/sh
           [ "${IPKG_NO_SCRIPT}" = "1" ] && exit 0
           [ -s ${IPKG_INSTROOT}/lib/functions.sh ] || exit 0
           . ${IPKG_INSTROOT}/lib/functions.sh
           default_postinst $0 $@
           exit 0
-          POSTINST
-          sed -i 's/^          //' "$WORK/control_dir/postinst"
-          chmod 755 "$WORK/control_dir/postinst"
+          EOF
+          sed -i 's/^          //' "$W/ctl/postinst"
+          chmod 755 "$W/ctl/postinst"
 
-          # ── 打包 ──────────────────────────────────────────
-          # control.tar.gz（注意：路径不含 data/ 前缀）
-          tar -czf "$WORK/control.tar.gz" \
-              -C "$WORK/control_dir" \
-              ./control ./postinst
+          echo "2.0" > "$W/debian-binary"
+          tar -czf "$W/control.tar.gz" -C "$W/ctl"  ./control ./postinst
+          tar -czf "$W/data.tar.gz"    -C "$W/data" .
+          tar -czf "$IPK"              -C "$W"       ./debian-binary ./control.tar.gz ./data.tar.gz
 
-          # data.tar.gz
-          tar -czf "$WORK/data.tar.gz" \
-              -C "$WORK/data" \
-              .
+          ls -lh "$IPK"
 
-          # debian-binary
-          echo "2.0" > "$WORK/debian-binary"
-
-          # 最终打包为 ipk（本质是 gzip 的 tar）
-          tar -czf "${IPK_NAME}" \
-              -C "$WORK" \
-              ./debian-binary \
-              ./control.tar.gz \
-              ./data.tar.gz
-
-          echo "IPK_NAME=${IPK_NAME}" >> $GITHUB_ENV
-          echo "=== IPK info ==="
-          ls -lh "${IPK_NAME}"
-
-      # ── 6. 上传 artifact（每个 job 单独上传） ─────────────
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -225,53 +139,38 @@ jobs:
           path: "*.ipk"
           retention-days: 30
 
-  # ── Release job：汇总所有 ipk 发布 ───────────────────────
   release:
-    name: Create GitHub Release
+    name: Create Release
     needs: build
     runs-on: ubuntu-22.04
-    # 只在 tag 推送时创建 release
     if: startsWith(github.ref, 'refs/tags/')
 
     steps:
-      - name: Download all artifacts
+      - name: Download all IPKs
         uses: actions/download-artifact@v4
         with:
           path: ipks
-          merge-multiple: true   # 把所有 artifact 拍平到 ipks/
+          merge-multiple: true
 
-      - name: List artifacts
-        run: ls -lh ipks/
-
-      - name: Create Release
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: "${{ env.PKG_NAME }} ${{ github.ref_name }}"
           body: |
             ## luci-app-onliner ${{ github.ref_name }}
 
-            C binary 版本，无需 jq 依赖，直接读 `/proc/net/arp`。
+            C binary 版本，无需 `jq`，直接读 `/proc/net/arp`。
 
-            ### 支持架构
             | 架构 | 适用设备 |
             |------|---------|
             | `mips_24kc` | MT7621、AR9331 等传统路由器 |
             | `mipsel_24kc` | MT7620、MT7628 等 |
-            | `arm_cortex-a7` | 斐训 N1、树莓派 2/3 等 |
+            | `arm_cortex-a7_neon-vfpv4` | 斐讯 N1、树莓派等 |
             | `aarch64_cortex-a53` | R2S、R4S、NanoPi 等 |
             | `x86_64` | 软路由 PC、虚拟机 |
-            | `riscv64` | 部分新款路由器 |
+            | `riscv64_riscv64` | 新款 RISC-V 路由器 |
 
-            ### 安装方法
             ```sh
-            # 下载对应架构的 ipk，然后：
-            opkg install luci-app-onliner_*_<your_arch>.ipk
+            opkg install luci-app-onliner_*_<arch>.ipk
             ```
-
-            ### 变更日志
-            - C binary 重写，替代 Shell + jq 方案
-            - 零外部依赖（仅 libc）
-            - 静态链接，可直接运行无需安装额外库
           files: ipks/*.ipk
-          draft: false
-          prerelease: false
