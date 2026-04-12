@@ -44,6 +44,7 @@
 #define SOCK_PATH         RUN_DIR "/onliner.sock"
 #define DHCP_LEASES       "/tmp/dhcp.leases"
 #define PERSIST_INTERVAL  600
+#define DUMP_INTERVAL     60
 #define MAX_DEVICES       512
 #define MAX_ADDRS         8
 #define MAC_LEN           18
@@ -83,6 +84,7 @@ static int      g_epoll   = -1;
 static int      g_nlfd    = -1;
 static int      g_sockfd  = -1;
 static int      g_timerfd = -1;
+static int      g_dumpfd  = -1;
 
 /* ── 工具 ──────────────────────────────────────────────────── */
 
@@ -182,6 +184,9 @@ static void get_hostname(const char *ip, const char *mac,
 
 /* ── Netlink 邻居事件 ───────────────────────────────────────── */
 
+/* 前置声明（定义在 nl_dump_neigh 之后）*/
+static void sync_mark(Device *d);
+
 static void handle_neigh(const struct nlmsghdr *nlh) {
     const struct ndmsg *ndm = (const struct ndmsg *)NLMSG_DATA(nlh);
     bool is_del = (nlh->nlmsg_type == RTM_DELNEIGH);
@@ -243,6 +248,7 @@ static void handle_neigh(const struct nlmsghdr *nlh) {
                 if (d->name[0] == '\0' || strcmp(d->name, "?") == 0)
                     get_hostname(ip_str, mac_str, d->name, NAME_LEN);
             }
+            sync_mark(d);
         } else if (going_offline && d->online) {
             d->online       = false;
             d->last_offline = now;
@@ -259,6 +265,7 @@ static void handle_neigh(const struct nlmsghdr *nlh) {
         d->online      = true;
         d->last_online = now;
         d->uptime      = now;
+        sync_mark(d);
     }
 }
 
@@ -445,6 +452,13 @@ static void load_json(const char *path) {
 
 /* ── Netlink helpers ────────────────────────────────────────── */
 
+/* 同步用的 generation 计数器：每次全量 dump 自增，
+ * handle_neigh 收到 REACHABLE/STALE 等在线状态时更新设备的 gen，
+ * dump 完成后（NLMSG_DONE）将 gen 落后的在线设备标记离线 */
+static uint32_t g_sync_gen     = 0;
+static bool     g_syncing      = false;
+static uint32_t g_dev_gen[MAX_DEVICES]; /* 与 g_devs[] 一一对应 */
+
 static void nl_dump_neigh(int nlfd, uint8_t family) {
     struct {
         struct nlmsghdr nlh;
@@ -460,17 +474,55 @@ static void nl_dump_neigh(int nlfd, uint8_t family) {
         log_fmt("nl_dump_neigh family=%d: %s", (int)family, strerror(errno));
 }
 
+/* 开始一轮同步：自增 generation */
+static void sync_begin(void) {
+    g_sync_gen++;
+    g_syncing = true;
+}
+
+/* handle_neigh 中设备被确认在线时调用 */
+static void sync_mark(Device *d) {
+    if (g_syncing)
+        g_dev_gen[d - g_devs] = g_sync_gen;
+}
+
+/* dump 的两个 family 都完成后调用：将未被确认的在线设备标记离线 */
+static void sync_end(void) {
+    time_t now = time(NULL);
+    for (int i = 0; i < g_ndev; i++) {
+        if (g_devs[i].used && g_devs[i].online &&
+            g_dev_gen[i] != g_sync_gen) {
+            g_devs[i].online       = false;
+            g_devs[i].last_offline = now;
+        }
+    }
+    g_syncing = false;
+}
+
 static void nl_read(int nlfd) {
     char buf[65536];
     ssize_t n;
+    /* 记录本次 recv 循环里是否遇到 NLMSG_DONE（dump 结束标志） */
+    bool got_done = false;
     while ((n = recv(nlfd, buf, sizeof(buf), MSG_DONTWAIT)) > 0) {
         struct nlmsghdr *nlh = (struct nlmsghdr *)buf;
         for (; NLMSG_OK(nlh, (uint32_t)n); nlh = NLMSG_NEXT(nlh, n)) {
-            if (nlh->nlmsg_type == NLMSG_DONE)  break;
+            if (nlh->nlmsg_type == NLMSG_DONE)  { got_done = true; break; }
             if (nlh->nlmsg_type == NLMSG_ERROR) continue;
             if (nlh->nlmsg_type == RTM_NEWNEIGH ||
                 nlh->nlmsg_type == RTM_DELNEIGH)
                 handle_neigh(nlh);
+        }
+    }
+    /* 如果正在同步且收到 DONE，完成清扫
+     * 注意：IPv4 和 IPv6 各有一个 DONE，等第二个才真正结束
+     * 用一个简单计数器处理 */
+    if (got_done && g_syncing) {
+        static int done_count = 0;
+        done_count++;
+        if (done_count >= 2) {   /* 两个 family 都 DONE */
+            done_count = 0;
+            sync_end();
         }
     }
 }
@@ -621,6 +673,15 @@ int main(void) {
     its.it_interval.tv_sec = PERSIST_INTERVAL;
     timerfd_settime(g_timerfd, 0, &its, NULL);
 
+    /* dumpfd: 60s 全量 dump 兜底 */
+    g_dumpfd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
+    if (g_dumpfd < 0) { perror("dumpfd"); return 1; }
+    struct itimerspec dts;
+    memset(&dts, 0, sizeof(dts));
+    dts.it_value.tv_sec    = DUMP_INTERVAL;
+    dts.it_interval.tv_sec = DUMP_INTERVAL;
+    timerfd_settime(g_dumpfd, 0, &dts, NULL);
+
     /* epoll */
     g_epoll = epoll_create1(EPOLL_CLOEXEC);
     if (g_epoll < 0) { perror("epoll"); return 1; }
@@ -630,7 +691,9 @@ int main(void) {
     ev.data.fd = g_nlfd;    epoll_ctl(g_epoll, EPOLL_CTL_ADD, g_nlfd,    &ev);
     ev.data.fd = g_sockfd;  epoll_ctl(g_epoll, EPOLL_CTL_ADD, g_sockfd,  &ev);
     ev.data.fd = g_timerfd; epoll_ctl(g_epoll, EPOLL_CTL_ADD, g_timerfd, &ev);
+    ev.data.fd = g_dumpfd;  epoll_ctl(g_epoll, EPOLL_CTL_ADD, g_dumpfd,  &ev);
 
+    sync_begin();
     nl_dump_neigh(g_nlfd, AF_INET);
     nl_dump_neigh(g_nlfd, AF_INET6);
 
@@ -651,6 +714,13 @@ int main(void) {
                 uint64_t exp;
                 if (read(g_timerfd, &exp, sizeof(exp)) > 0)
                     persist();
+            } else if (efd == g_dumpfd) {
+                uint64_t exp;
+                if (read(g_dumpfd, &exp, sizeof(exp)) > 0) {
+                    sync_begin();
+                    nl_dump_neigh(g_nlfd, AF_INET);
+                    nl_dump_neigh(g_nlfd, AF_INET6);
+                }
             }
         }
     }
@@ -661,6 +731,7 @@ int main(void) {
     close(g_nlfd);
     close(g_sockfd);
     close(g_timerfd);
+    close(g_dumpfd);
     unlink(SOCK_PATH);
     remove(LOCK_FILE);
     if (g_log) fclose(g_log);
