@@ -53,8 +53,8 @@ jobs:
             PKG_RELEASE="${TAG##*-}"
             [ "$PKG_RELEASE" = "$TAG" ] && PKG_RELEASE="r1"
           else
-            PKG_VERSION="5.0"
-            PKG_RELEASE="dev"
+            PKG_VERSION="4_2"
+            PKG_RELEASE="r1"
           fi
           echo "ver=${PKG_VERSION}-${PKG_RELEASE}" >> $GITHUB_OUTPUT
 
