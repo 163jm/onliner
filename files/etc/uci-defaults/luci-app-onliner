@@ -1,0 +1,6 @@
+#!/bin/sh
+/etc/init.d/onliner enable
+/etc/init.d/onliner start
+sleep 1
+/etc/init.d/rpcd reload
+exit 0
