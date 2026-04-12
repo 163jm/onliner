@@ -45,6 +45,25 @@ function getDisplayName(device) {
     return device.custom_name || device.name || '?';
 }
 
+/* 将换行分隔的地址字符串渲染成多行 <span> */
+function renderIPs(ipStr) {
+    if (!ipStr) return E('span', {}, '-');
+    const addrs = String(ipStr).split('\n').filter(s => s.trim() !== '');
+    if (addrs.length === 0) return E('span', {}, '-');
+    if (addrs.length === 1) return E('span', {}, addrs[0]);
+
+    const wrap = E('span', {});
+    addrs.forEach((addr, idx) => {
+        const isV6 = addr.indexOf(':') !== -1;
+        wrap.appendChild(E('span', {
+            'style': isV6
+                ? 'display:block; font-size:11px; color:#888; font-family:monospace;'
+                : 'display:block; font-family:monospace;'
+        }, addr));
+    });
+    return wrap;
+}
+
 return view.extend({
     render() {
         const container = E('div', { 'class': 'cbi-map' });
@@ -96,11 +115,9 @@ return view.extend({
         container.appendChild(header);
         container.appendChild(tableWrap);
 
-        // 渲染函数
         function renderDevices(data) {
             const devices = (data && data.devices) ? data.devices : [];
 
-            // 排序：在线优先，然后按上线时间倒序
             devices.sort((a, b) => {
                 if (a.status === 'online' && b.status !== 'online') return -1;
                 if (a.status !== 'online' && b.status === 'online') return 1;
@@ -109,9 +126,8 @@ return view.extend({
 
             const onlineCount = devices.filter(d => d.status === 'online').length;
             const summary = document.getElementById('onliner-summary');
-            if (summary) {
+            if (summary)
                 summary.textContent = '共 ' + devices.length + ' 台设备，当前在线 ' + onlineCount + ' 台';
-            }
 
             const tbody = document.getElementById('onliner-tbody');
             if (!tbody) return;
@@ -125,7 +141,7 @@ return view.extend({
             }
 
             devices.forEach((device, idx) => {
-                const isOnline = device.status === 'online';
+                const isOnline    = device.status === 'online';
                 const displayName = getDisplayName(device);
 
                 const statusCell = E('td', {}, [
@@ -136,7 +152,6 @@ return view.extend({
                     isOnline ? '在线' : '离线'
                 ]);
 
-                // 主机名可点击修改
                 const nameCell = E('td', {}, [
                     E('span', {
                         'style': 'cursor:pointer; border-bottom:1px dashed #999;',
@@ -152,9 +167,7 @@ return view.extend({
                                     if (e.key === 'Enter') saveBtn.click();
                                     if (e.key === 'Escape') {
                                         span.style.display = '';
-                                        input.remove();
-                                        saveBtn.remove();
-                                        cancelBtn.remove();
+                                        input.remove(); saveBtn.remove(); cancelBtn.remove();
                                         poll.start();
                                     }
                                 }
@@ -168,9 +181,7 @@ return view.extend({
                                         device.custom_name = newName;
                                         span.textContent = newName || device.name || '?';
                                         span.style.display = '';
-                                        input.remove();
-                                        saveBtn.remove();
-                                        cancelBtn.remove();
+                                        input.remove(); saveBtn.remove(); cancelBtn.remove();
                                         poll.start();
                                     });
                                 }
@@ -180,9 +191,7 @@ return view.extend({
                                 'style': 'padding:2px 6px; margin-left:2px; font-size:12px;',
                                 'click': function() {
                                     span.style.display = '';
-                                    input.remove();
-                                    saveBtn.remove();
-                                    cancelBtn.remove();
+                                    input.remove(); saveBtn.remove(); cancelBtn.remove();
                                     poll.start();
                                 }
                             }, '✗');
@@ -202,7 +211,8 @@ return view.extend({
                 }, [
                     statusCell,
                     nameCell,
-                    E('td', {}, device.ip || '-'),
+                    /* IP 列：IPv4 正常字号，IPv6 小字灰色换行显示 */
+                    E('td', {}, [ renderIPs(device.ip) ]),
                     E('td', { 'style': 'font-family:monospace; font-size:13px;' }, device.mac || '-'),
                     E('td', {}, device.interface || '-'),
                     E('td', {}, isOnline ? formatUptime(device.uptime) : '-'),
@@ -214,10 +224,7 @@ return view.extend({
             });
         }
 
-        // 首次加载
         callGetDevices().then(renderDevices);
-
-        // 定时刷新 5 秒
         poll.add(() => callGetDevices().then(renderDevices), 5);
 
         return container;
