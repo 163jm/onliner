@@ -1,10 +1,12 @@
 #!/usr/bin/ucode
 'use strict';
 
+import * as fs from 'fs';
+
 const CTL = '/usr/sbin/onliner-ctl';
 
 function run_ctl(args) {
-	const pipe = popen(CTL + ' ' + args, 'r');
+	const pipe = fs.popen(CTL + ' ' + args, 'r');
 	if (!pipe) return null;
 	const out = pipe.read('all');
 	pipe.close();
