@@ -1,63 +1,55 @@
 #!/usr/bin/ucode
 'use strict';
 
-import { readfile, writefile } from 'fs';
+import { popen } from 'os';
 
-const DEVICES_JSON = '/tmp/onliner/devices.json';
-const PERSIST_FILE = '/etc/onliner/devices.json';
+const CTL = '/usr/sbin/onliner-ctl';
 
-function read_devices() {
-	const content = readfile(DEVICES_JSON);
-	if (!content) return { devices: [] };
-	try { return json(content); } catch(e) { return { devices: [] }; }
+function run_ctl(args) {
+	const pipe = popen(CTL + ' ' + args, 'r');
+	if (!pipe) return null;
+	const out = pipe.read('all');
+	pipe.close();
+	return out;
 }
 
-function write_devices(data) {
-	const j = sprintf('%.J\n', data);
-	writefile(DEVICES_JSON, j);
-	writefile(PERSIST_FILE, j);
+function get_devices() {
+	const out = run_ctl('get');
+	if (!out) return { devices: [] };
+	try { return json(out); } catch(e) { return { devices: [] }; }
 }
 
 const methods = {
 	get_devices: {
 		call: function() {
-			return read_devices();
+			return get_devices();
 		}
 	},
 
 	set_custom_name: {
 		args: { mac: 'mac', name: 'name' },
 		call: function(req) {
-			const mac = req.args?.mac;
-			const name = req.args?.name;
+			const mac  = req.args?.mac;
+			const name = req.args?.name ?? '';
 			if (!mac) return { error: 'mac required' };
 
-			const data = read_devices();
-			let found = false;
-			for (let i = 0; i < length(data.devices); i++) {
-				const d = data.devices[i];
-				if (lc(d.mac) === lc(mac)) {
-					d.custom_name = name || '';
-					found = true;
-					break;
-				}
-			}
-			if (!found) return { error: 'device not found' };
-			write_devices(data);
+			/* name 里可能含空格，整体加引号传给 shell；
+			   onliner-ctl 只取 argv[3]，不经 shell 解析，
+			   所以这里用 printf 拼原始命令行即可 */
+			const out = run_ctl(
+				sprintf("set-name '%s' '%s'",
+				        replace(mac,  "'", ""),
+				        replace(name, "'", ""))
+			);
+			if (!out || !match(out, /^OK/)) return { error: trim(out) || 'failed' };
 			return { result: true };
 		}
 	},
 
 	clear_offline: {
 		call: function() {
-			const data = read_devices();
-			const online = [];
-			for (let i = 0; i < length(data.devices); i++) {
-				if (data.devices[i].status === 'online')
-					push(online, data.devices[i]);
-			}
-			data.devices = online;
-			write_devices(data);
+			const out = run_ctl('clear-offline');
+			if (!out || !match(out, /^OK/)) return { error: trim(out) || 'failed' };
 			return { result: true };
 		}
 	}
