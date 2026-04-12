@@ -1,0 +1,66 @@
+#!/usr/bin/ucode
+'use strict';
+
+import { readfile, writefile } from 'fs';
+
+const DEVICES_JSON = '/tmp/onliner/devices.json';
+const PERSIST_FILE = '/etc/onliner/devices.json';
+
+function read_devices() {
+	const content = readfile(DEVICES_JSON);
+	if (!content) return { devices: [] };
+	try { return json(content); } catch(e) { return { devices: [] }; }
+}
+
+function write_devices(data) {
+	const j = sprintf('%.J\n', data);
+	writefile(DEVICES_JSON, j);
+	writefile(PERSIST_FILE, j);
+}
+
+const methods = {
+	get_devices: {
+		call: function() {
+			return read_devices();
+		}
+	},
+
+	set_custom_name: {
+		args: { mac: 'mac', name: 'name' },
+		call: function(req) {
+			const mac = req.args?.mac;
+			const name = req.args?.name;
+			if (!mac) return { error: 'mac required' };
+
+			const data = read_devices();
+			let found = false;
+			for (let i = 0; i < length(data.devices); i++) {
+				const d = data.devices[i];
+				if (lc(d.mac) === lc(mac)) {
+					d.custom_name = name || '';
+					found = true;
+					break;
+				}
+			}
+			if (!found) return { error: 'device not found' };
+			write_devices(data);
+			return { result: true };
+		}
+	},
+
+	clear_offline: {
+		call: function() {
+			const data = read_devices();
+			const online = [];
+			for (let i = 0; i < length(data.devices); i++) {
+				if (data.devices[i].status === 'online')
+					push(online, data.devices[i]);
+			}
+			data.devices = online;
+			write_devices(data);
+			return { result: true };
+		}
+	}
+};
+
+return { 'luci.onliner': methods };
