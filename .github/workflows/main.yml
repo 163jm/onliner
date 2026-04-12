@@ -65,18 +65,14 @@ jobs:
 
       - name: Compile
         run: |
-          zig cc src/onliner.c \
-            -target ${{ matrix.zig_target }} \
-            -mcpu=${{ matrix.zig_cpu }} \
-            -O2 \
-            -static \
-            -o onliner \
-            -Wall -Wextra -Werror \
-            -Wl,--strip-all
+          ZIG_FLAGS="-D_GNU_SOURCE -target ${{ matrix.zig_target }} -mcpu=${{ matrix.zig_cpu }} -O2 -static -Wall -Wextra -Werror -Wl,--strip-all"
+
+          zig cc src/onliner.c     $ZIG_FLAGS -o onliner
+          zig cc src/onliner-ctl.c $ZIG_FLAGS -o onliner-ctl
 
           echo "=== binary info ==="
-          file onliner
-          ls -lh onliner
+          file onliner onliner-ctl
+          ls -lh onliner onliner-ctl
 
       - name: Package IPK
         id: pkg
@@ -90,6 +86,7 @@ jobs:
           mkdir -p "$W/data" "$W/ctl"
 
           install -Dm755 onliner                                                "$W/data/usr/sbin/onliner"
+          install -Dm755 onliner-ctl                                            "$W/data/usr/sbin/onliner-ctl"
           install -Dm755 files/etc/init.d/onliner                               "$W/data/etc/init.d/onliner"
           install -Dm755 files/etc/uci-defaults/luci-app-onliner                "$W/data/etc/uci-defaults/luci-app-onliner"
           install -Dm644 files/etc/onliner/devices.json                         "$W/data/etc/onliner/devices.json"
@@ -108,7 +105,7 @@ jobs:
           Section: luci
           Architecture: ${ARCH}
           Installed-Size: ${SIZE}
-          Description: LuCI online device tracker (C binary, no jq required)
+          Description: LuCI online device tracker (C binary, netlink, Unix socket)
           EOF
           sed -i 's/^          //' "$W/ctl/control"
 
@@ -157,7 +154,7 @@ jobs:
           body: |
             ## luci-app-onliner ${{ github.ref_name }}
 
-            C binary 版本，无需 `jq`，直接读 `/proc/net/arp`。
+            netlink 事件驱动，Unix socket 实时数据，IPv4 + 公网 IPv6 显示。
 
             | 架构 | 适用设备 |
             |------|---------|
@@ -166,7 +163,6 @@ jobs:
             | `arm_cortex-a7_neon-vfpv4` | 斐讯 N1、树莓派等 |
             | `aarch64_cortex-a53` | R2S、R4S、NanoPi 等 |
             | `x86_64` | 软路由 PC、虚拟机 |
-            | `riscv64_riscv64` | 新款 RISC-V 路由器 |
 
             ```sh
             opkg install luci-app-onliner_*_<arch>.ipk
