@@ -39,9 +39,6 @@ jobs:
             openwrt_arch: x86_64
             zig_cpu: x86_64
 
-          - zig_target: riscv64-linux-musl
-            openwrt_arch: riscv64_riscv64
-            zig_cpu: generic_rv64
 
     steps:
       - name: Checkout
@@ -74,7 +71,8 @@ jobs:
             -O2 \
             -static \
             -o onliner \
-            -Wall -Wextra -Werror
+            -Wall -Wextra -Werror \
+            -Wl,--strip-all
 
           echo "=== binary info ==="
           file onliner
