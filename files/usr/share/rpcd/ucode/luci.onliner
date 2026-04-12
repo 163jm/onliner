@@ -1,8 +1,6 @@
 #!/usr/bin/ucode
 'use strict';
 
-import { popen } from 'os';
-
 const CTL = '/usr/sbin/onliner-ctl';
 
 function run_ctl(args) {
@@ -32,10 +30,6 @@ const methods = {
 			const mac  = req.args?.mac;
 			const name = req.args?.name ?? '';
 			if (!mac) return { error: 'mac required' };
-
-			/* name 里可能含空格，整体加引号传给 shell；
-			   onliner-ctl 只取 argv[3]，不经 shell 解析，
-			   所以这里用 printf 拼原始命令行即可 */
 			const out = run_ctl(
 				sprintf("set-name '%s' '%s'",
 				        replace(mac,  "'", ""),
