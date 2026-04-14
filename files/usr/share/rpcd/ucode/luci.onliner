@@ -16,13 +16,36 @@ function write_runtime(data) {
 	writefile(DEVICES_JSON, sprintf('%.J\n', data));
 }
 
-/* 只把 mac/name/custom_name 写入 /etc，避免频繁写 flash */
-function write_persist(devices) {
-	const names = map(devices, d => ({
-		mac:         d.mac,
-		name:        d.name        || '',
-		custom_name: d.custom_name || ''
-	}));
+/* 读取 /etc 中已有的 names 列表，返回 array */
+function read_persist_names() {
+	const content = readfile(PERSIST_FILE);
+	if (!content) return [];
+	try {
+		const obj = json(content);
+		return (obj && obj.names) ? obj.names : [];
+	} catch(e) { return []; }
+}
+
+/*
+ * 只更新 /etc 中指定 mac 的 custom_name，其他条目保持不变。
+ * 如果 /etc 中不存在该 mac，则新增一条（用 /tmp 里的 name 填充）。
+ * 这样避免了用 /tmp 全量覆盖 /etc 导致其他设备 custom_name 丢失的问题。
+ */
+function persist_one(mac, name, custom_name) {
+	const names = read_persist_names();
+	let found = false;
+	for (let i = 0; i < length(names); i++) {
+		if (lc(names[i].mac) === lc(mac)) {
+			names[i].custom_name = custom_name;
+			/* 顺便更新 name，保持与 /tmp 同步 */
+			if (name) names[i].name = name;
+			found = true;
+			break;
+		}
+	}
+	if (!found) {
+		push(names, { mac: lc(mac), name: name || '', custom_name: custom_name });
+	}
 	writefile(PERSIST_FILE, sprintf('%.J\n', { names }));
 }
 
@@ -40,22 +63,26 @@ const methods = {
 			const name = req.args?.name;
 			if (!mac) return { error: 'mac required' };
 
+			/* 1. 更新 /tmp 运行时（让前端刷新立即生效） */
 			const data = read_devices();
+			let devName = '';
 			let found = false;
 			for (let i = 0; i < length(data.devices); i++) {
 				const d = data.devices[i];
 				if (lc(d.mac) === lc(mac)) {
 					d.custom_name = name || '';
+					devName = d.name || '';
 					found = true;
 					break;
 				}
 			}
 			if (!found) return { error: 'device not found' };
-			/* 更新运行时文件（tmpfs，随便写） */
 			write_runtime(data);
-			/* 持久化主机名映射到 /etc（仅在改名时触发） */
-			write_persist(data.devices);
-			/* 通知 C 进程重载 custom_name（避免下次扫描覆盖） */
+
+			/* 2. 只 merge 这一条到 /etc，不碰其他设备的 custom_name */
+			persist_one(mac, devName, name || '');
+
+			/* 3. 通知 C 进程重载 custom_name，避免下次 scan 覆盖 /tmp */
 			const lock = readfile('/tmp/onliner/onliner.lock');
 			if (lock) {
 				const pid = +trim(lock);
