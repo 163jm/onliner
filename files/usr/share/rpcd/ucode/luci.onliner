@@ -119,6 +119,16 @@ const methods = {
 			}
 			data.devices = online;
 			write_runtime(data);
+
+			/* 通知 C 进程同步清除内存中的离线设备 */
+			const lock = readfile('/tmp/onliner/onliner.lock');
+			if (lock) {
+				const pid = +trim(lock);
+				if (pid > 0) {
+					const p = popen('kill -USR2 ' + pid, 'r');
+					if (p) p.close();
+				}
+			}
 			return { result: true };
 		}
 	}
