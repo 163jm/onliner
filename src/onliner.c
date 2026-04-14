@@ -553,20 +553,29 @@ int main(void) {
     log_fmt("onliner started (pid=%d, /proc/net/arp mode)", (int)getpid());
 
     while (g_running) {
-        /* SIGUSR1：ucode 改了 custom_name，同步回内存 */
+        scan();
+
+        /* SIGUSR1：ucode 改了 custom_name，同步回内存后立即重写 /tmp
+         * 必须在 scan() 之后、write_json() 之前处理，
+         * 这样 write_json 输出的 /tmp 就已经包含最新 custom_name。
+         * 同时在 sleep 内也检查，保证信号来了能尽快（≤1秒）响应。 */
         if (g_reload_names) {
             g_reload_names = 0;
             reload_custom_names();
         }
 
-        scan();
-        /* 只写 tmpfs，持久化仅在新设备出现时由 save_names() 触发 */
+        /* 写 tmpfs，包含最新 custom_name */
         write_json(DEVICES_JSON);
 
         /* 分段 sleep，每秒检查一次 g_running/g_reload_names，快速响应信号 */
         for (int i = 0; i < SCAN_INTERVAL && g_running; i++) {
             sleep(1);
-            if (g_reload_names) break;  /* 提前唤醒，尽快处理改名 */
+            if (g_reload_names) {
+                /* 信号来了：立即同步内存并刷新 /tmp，不等下一轮 scan */
+                g_reload_names = 0;
+                reload_custom_names();
+                write_json(DEVICES_JSON);
+            }
         }
     }
 
