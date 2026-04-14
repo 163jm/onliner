@@ -66,6 +66,7 @@ typedef struct {
 static Device  g_devs[MAX_DEVICES];
 static int     g_ndev = 0;
 static volatile sig_atomic_t g_running = 1;
+static volatile sig_atomic_t g_reload_names = 0;  /* SIGUSR1 触发重载 custom_name */
 static FILE   *g_log = NULL;
 
 /* ── 前向声明 ─────────────────────────────────────────────────── */
@@ -448,6 +449,62 @@ static void handle_signal(int sig) {
     g_running = 0;
 }
 
+static void handle_sigusr1(int sig) {
+    (void)sig;
+    g_reload_names = 1;
+}
+
+/* 从 /tmp/onliner/devices.json 把 custom_name 同步回内存
+ * 由 SIGUSR1 触发，在主循环安全点调用 */
+static void reload_custom_names(void) {
+    FILE *f = fopen(DEVICES_JSON, "r");
+    if (!f) return;
+
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    rewind(f);
+    if (sz <= 0 || sz > 1024 * 1024) { fclose(f); return; }
+
+    char *buf = malloc(sz + 1);
+    if (!buf) { fclose(f); return; }
+    if (fread(buf, 1, sz, f) != (size_t)sz) { free(buf); fclose(f); return; }
+    buf[sz] = '\0';
+    fclose(f);
+
+    int updated = 0;
+    const char *p = buf;
+    while ((p = strchr(p, '{')) != NULL) {
+        if (*(p+1) == '"' || *(p+1) == '\n') {
+            const char *end = strchr(p, '}');
+            if (!end) break;
+            int objlen = (int)(end - p + 1);
+            char *obj = malloc(objlen + 1);
+            if (!obj) { p = end + 1; continue; }
+            memcpy(obj, p, objlen);
+            obj[objlen] = '\0';
+
+            char mac[MAC_LEN] = "", cname[NAME_LEN] = "";
+            json_get_str(obj, "mac",         mac,   MAC_LEN);
+            json_get_str(obj, "custom_name", cname, NAME_LEN);
+            free(obj);
+
+            if (mac[0] != '\0') {
+                Device *d = find_device(mac);
+                if (d && strcmp(d->custom_name, cname) != 0) {
+                    snprintf(d->custom_name, NAME_LEN, "%s", cname);
+                    updated++;
+                }
+            }
+            p = end + 1;
+        } else {
+            p++;
+        }
+    }
+    free(buf);
+    if (updated > 0)
+        log_fmt("reloaded custom_names: %d device(s) updated", updated);
+}
+
 /* ── Lock 文件 ───────────────────────────────────────────────── */
 static bool acquire_lock(void) {
     /* 检查旧 lock */
@@ -486,6 +543,7 @@ int main(void) {
     /* 信号 */
     signal(SIGTERM, handle_signal);
     signal(SIGINT,  handle_signal);
+    signal(SIGUSR1, handle_sigusr1);
 
     /* 加载历史数据 */
     load_json(PERSIST_FILE);
@@ -493,13 +551,21 @@ int main(void) {
     log_fmt("onliner started (pid=%d, /proc/net/arp mode)", (int)getpid());
 
     while (g_running) {
+        /* SIGUSR1：ucode 改了 custom_name，同步回内存 */
+        if (g_reload_names) {
+            g_reload_names = 0;
+            reload_custom_names();
+        }
+
         scan();
         /* 只写 tmpfs，持久化仅在新设备出现时由 save_names() 触发 */
         write_json(DEVICES_JSON);
 
-        /* 分段 sleep，每秒检查一次 g_running，使 SIGTERM 快速响应 */
-        for (int i = 0; i < SCAN_INTERVAL && g_running; i++)
+        /* 分段 sleep，每秒检查一次 g_running/g_reload_names，快速响应信号 */
+        for (int i = 0; i < SCAN_INTERVAL && g_running; i++) {
             sleep(1);
+            if (g_reload_names) break;  /* 提前唤醒，尽快处理改名 */
+        }
     }
 
     log_fmt("onliner stopping (pid=%d)", (int)getpid());
