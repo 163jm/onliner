@@ -67,7 +67,6 @@ static Device  g_devs[MAX_DEVICES];
 static int     g_ndev = 0;
 static volatile sig_atomic_t g_running = 1;
 static volatile sig_atomic_t g_reload_names = 0;  /* SIGUSR1 触发重载 custom_name */
-static volatile sig_atomic_t g_clear_offline = 0; /* SIGUSR2 触发清除离线设备 */
 static FILE   *g_log = NULL;
 
 /* ── 前向声明 ─────────────────────────────────────────────────── */
@@ -415,31 +414,6 @@ static void handle_sigusr1(int sig) {
     g_reload_names = 1;
 }
 
-static void handle_sigusr2(int sig) {
-    (void)sig;
-    g_clear_offline = 1;
-}
-
-/* 清除内存中所有离线设备，由 SIGUSR2 触发 */
-static void do_clear_offline(void) {
-    int removed = 0;
-    /* 把在线设备往前紧缩，离线设备标记为 unused */
-    int write = 0;
-    for (int i = 0; i < g_ndev; i++) {
-        if (g_devs[i].used && g_devs[i].online) {
-            if (i != write) g_devs[write] = g_devs[i];
-            write++;
-        } else if (g_devs[i].used) {
-            removed++;
-        }
-    }
-    /* 清空尾部 */
-    for (int i = write; i < g_ndev; i++)
-        memset(&g_devs[i], 0, sizeof(g_devs[i]));
-    g_ndev = write;
-    log_fmt("clear_offline: removed %d devices", removed);
-}
-
 /* 从 /etc/onliner/devices.json（names-only 格式）把 custom_name 同步回内存
  * 由 SIGUSR1 触发，在主循环安全点调用。
  * 读 /etc 而不是 /tmp，因为 /etc 是我们自己写的干净格式，
@@ -534,7 +508,6 @@ int main(void) {
     signal(SIGTERM, handle_signal);
     signal(SIGINT,  handle_signal);
     signal(SIGUSR1, handle_sigusr1);
-    signal(SIGUSR2, handle_sigusr2);
 
     /* 加载历史数据 */
     load_json(PERSIST_FILE);
@@ -553,11 +526,6 @@ int main(void) {
             reload_custom_names();
         }
 
-        if (g_clear_offline) {
-            g_clear_offline = 0;
-            do_clear_offline();
-        }
-
         /* 写 tmpfs，包含最新 custom_name */
         write_json(DEVICES_JSON);
 
@@ -567,11 +535,6 @@ int main(void) {
             if (g_reload_names) {
                 g_reload_names = 0;
                 reload_custom_names();
-                write_json(DEVICES_JSON);
-            }
-            if (g_clear_offline) {
-                g_clear_offline = 0;
-                do_clear_offline();
                 write_json(DEVICES_JSON);
             }
         }
