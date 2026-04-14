@@ -1,7 +1,7 @@
 #!/usr/bin/ucode
 'use strict';
 
-import { readfile, writefile } from 'fs';
+import { readfile, writefile, popen } from 'fs';
 
 const DEVICES_JSON = '/tmp/onliner/devices.json';
 const PERSIST_FILE = '/etc/onliner/devices.json';
@@ -55,6 +55,15 @@ const methods = {
 			write_runtime(data);
 			/* 持久化主机名映射到 /etc（仅在改名时触发） */
 			write_persist(data.devices);
+			/* 通知 C 进程重载 custom_name（避免下次扫描覆盖） */
+			const lock = readfile('/tmp/onliner/onliner.lock');
+			if (lock) {
+				const pid = +trim(lock);
+				if (pid > 0) {
+					const p = popen('kill -USR1 ' + pid, 'r');
+					if (p) p.close();
+				}
+			}
 			return { result: true };
 		}
 	},
