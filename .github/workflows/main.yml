@@ -5,6 +5,19 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag（例如 v1.2.0）'
+        required: true
+        default: 'v1.0.0'
+      pkg_version:
+        description: 'IPK 版本号（例如 1.2）'
+        required: true
+        default: '1.0'
+      pkg_release:
+        description: 'IPK release 编号（例如 r1）'
+        required: true
+        default: 'r1'
 
 env:
   PKG_NAME: luci-app-onliner
@@ -47,7 +60,10 @@ jobs:
       - name: Set version
         id: ver
         run: |
-          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            PKG_VERSION="${{ github.event.inputs.pkg_version }}"
+            PKG_RELEASE="${{ github.event.inputs.pkg_release }}"
+          elif [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             TAG="${GITHUB_REF#refs/tags/v}"
             PKG_VERSION="${TAG%%-*}"
             PKG_RELEASE="${TAG##*-}"
@@ -141,9 +157,18 @@ jobs:
     name: Create Release
     needs: build
     runs-on: ubuntu-22.04
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
 
     steps:
+      - name: Determine release tag
+        id: tag
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          fi
+
       - name: Download all IPKs
         uses: actions/download-artifact@v4
         with:
@@ -153,9 +178,10 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: "${{ env.PKG_NAME }} ${{ github.ref_name }}"
+          tag_name: "${{ steps.tag.outputs.tag }}"
+          name: "${{ env.PKG_NAME }} ${{ steps.tag.outputs.tag }}"
           body: |
-            ## luci-app-onliner ${{ github.ref_name }}
+            ## luci-app-onliner ${{ steps.tag.outputs.tag }}
 
             C binary 版本，无需 `jq`，直接读 `/proc/net/arp`。
 
