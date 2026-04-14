@@ -46,7 +46,21 @@ function persist_one(mac, name, custom_name) {
 	if (!found) {
 		push(names, { mac: lc(mac), name: name || '', custom_name: custom_name });
 	}
-	writefile(PERSIST_FILE, sprintf('%.J\n', { names }));
+	/* 手动拼紧凑格式：每条记录一行，避免 sprintf('%.J') 生成多行嵌套
+	 * 导致 C 进程的轻量解析器（strchr '}'截断）无法正确读取字段。
+	 * 格式：{"names":[\n  {"mac":"...","name":"...","custom_name":"..."},\n  ...\n]}\n */
+	let out = '{"names":[\n';
+	for (let i = 0; i < length(names); i++) {
+		const e = names[i];
+		const mac_s   = replace(e.mac         || '', '"', '');
+		const name_s  = replace(e.name        || '', '"', '');
+		const cname_s = replace(e.custom_name || '', '"', '');
+		out += '  {"mac":"' + mac_s + '","name":"' + name_s + '","custom_name":"' + cname_s + '"}';
+		if (i < length(names) - 1) out += ',';
+		out += '\n';
+	}
+	out += ']}\n';
+	writefile(PERSIST_FILE, out);
 }
 
 const methods = {
