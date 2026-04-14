@@ -46,8 +46,8 @@ return view.extend({
         const header = E('div', { 'class': 'cbi-section' }, [
             E('div', { 'style': 'display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;' }, [
                 E('h3', { 'style': 'margin:0;' }, '在线用户'),
-            ]),
-            E('div', { 'id': 'onliner-summary', 'style': 'color:#666; margin-bottom:8px;' }, '加载中...')
+                E('div', { 'id': 'onliner-summary', 'style': 'color:#666;' }, '加载中...')
+            ])
         ]);
 
         const tableWrap = E('div', { 'class': 'cbi-section' }, [
