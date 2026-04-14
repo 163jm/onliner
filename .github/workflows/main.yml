@@ -13,7 +13,7 @@ on:
       pkg_version:
         description: 'IPK 版本号（例如 1.2）'
         required: true
-        default: '1.0'
+        default: '4.2'
       pkg_release:
         description: 'IPK release 编号（例如 r1）'
         required: true
