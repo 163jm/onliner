@@ -43,10 +43,10 @@ return view.extend({
     render() {
         const container = E('div', { 'class': 'cbi-map' });
 
-        const header = E('div', { 'class': 'cbi-section' }, [
-            E('div', { 'style': 'display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;' }, [
+        const header = E('div', { 'class': 'cbi-section', 'style': 'padding:8px 12px; margin-bottom:0;' }, [
+            E('div', { 'style': 'display:flex; align-items:center; justify-content:space-between;' }, [
                 E('h3', { 'style': 'margin:0;' }, '在线用户'),
-                E('div', { 'id': 'onliner-summary', 'style': 'color:#666;' }, '加载中...')
+                E('div', { 'id': 'onliner-summary', 'style': 'color:#666; white-space:nowrap; padding-right:8px;' }, '加载中...')
             ])
         ]);
 
