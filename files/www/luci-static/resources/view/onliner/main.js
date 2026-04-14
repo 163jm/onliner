@@ -17,12 +17,6 @@ const callSetCustomName = rpc.declare({
     expect: { '': {} }
 });
 
-const callClearOffline = rpc.declare({
-    object: 'luci.onliner',
-    method: 'clear_offline',
-    expect: { '': {} }
-});
-
 function formatTime(ts) {
     if (!ts || ts === 0) return '-';
     const d = new Date(ts * 1000);
@@ -52,15 +46,6 @@ return view.extend({
         const header = E('div', { 'class': 'cbi-section' }, [
             E('div', { 'style': 'display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;' }, [
                 E('h3', { 'style': 'margin:0;' }, '在线用户'),
-                E('button', {
-                    'class': 'btn cbi-button cbi-button-remove',
-                    'click': () => {
-                        if (!confirm('确定清除所有离线设备记录？')) return;
-                        callClearOffline().then(() => {
-                            ui.addNotification(null, E('p', '已清除离线设备'), 'info');
-                        });
-                    }
-                }, '清除离线设备')
             ]),
             E('div', { 'id': 'onliner-summary', 'style': 'color:#666; margin-bottom:8px;' }, '加载中...')
         ]);
