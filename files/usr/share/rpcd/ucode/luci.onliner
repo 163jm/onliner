@@ -1,0 +1,77 @@
+#!/usr/bin/ucode
+'use strict';
+
+import { readfile, writefile } from 'fs';
+
+const DEVICES_JSON = '/tmp/onliner/devices.json';
+const PERSIST_FILE = '/etc/onliner/devices.json';
+
+function read_devices() {
+	const content = readfile(DEVICES_JSON);
+	if (!content) return { devices: [] };
+	try { return json(content); } catch(e) { return { devices: [] }; }
+}
+
+function write_runtime(data) {
+	writefile(DEVICES_JSON, sprintf('%.J\n', data));
+}
+
+/* 只把 mac/name/custom_name 写入 /etc，避免频繁写 flash */
+function write_persist(devices) {
+	const names = map(devices, d => ({
+		mac:         d.mac,
+		name:        d.name        || '',
+		custom_name: d.custom_name || ''
+	}));
+	writefile(PERSIST_FILE, sprintf('%.J\n', { names }));
+}
+
+const methods = {
+	get_devices: {
+		call: function() {
+			return read_devices();
+		}
+	},
+
+	set_custom_name: {
+		args: { mac: 'mac', name: 'name' },
+		call: function(req) {
+			const mac = req.args?.mac;
+			const name = req.args?.name;
+			if (!mac) return { error: 'mac required' };
+
+			const data = read_devices();
+			let found = false;
+			for (let i = 0; i < length(data.devices); i++) {
+				const d = data.devices[i];
+				if (lc(d.mac) === lc(mac)) {
+					d.custom_name = name || '';
+					found = true;
+					break;
+				}
+			}
+			if (!found) return { error: 'device not found' };
+			/* 更新运行时文件（tmpfs，随便写） */
+			write_runtime(data);
+			/* 持久化主机名映射到 /etc（仅在改名时触发） */
+			write_persist(data.devices);
+			return { result: true };
+		}
+	},
+
+	clear_offline: {
+		call: function() {
+			const data = read_devices();
+			const online = [];
+			for (let i = 0; i < length(data.devices); i++) {
+				if (data.devices[i].status === 'online')
+					push(online, data.devices[i]);
+			}
+			data.devices = online;
+			write_runtime(data);
+			return { result: true };
+		}
+	}
+};
+
+return { 'luci.onliner': methods };

@@ -1,0 +1,10 @@
+{
+    "admin/status/onliner": {
+        "title": "在线用户",
+        "order": 90,
+        "action": {
+            "type": "view",
+            "path": "onliner/main"
+        }
+    }
+}
