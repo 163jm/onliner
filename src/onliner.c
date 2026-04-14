@@ -454,16 +454,18 @@ static void handle_sigusr1(int sig) {
     g_reload_names = 1;
 }
 
-/* 从 /tmp/onliner/devices.json 把 custom_name 同步回内存
- * 由 SIGUSR1 触发，在主循环安全点调用 */
+/* 从 /etc/onliner/devices.json（names-only 格式）把 custom_name 同步回内存
+ * 由 SIGUSR1 触发，在主循环安全点调用。
+ * 读 /etc 而不是 /tmp，因为 /etc 是我们自己写的干净格式，
+ * /tmp 是 ucode 用 sprintf('%.J') 写的，字段顺序可能不同。 */
 static void reload_custom_names(void) {
-    FILE *f = fopen(DEVICES_JSON, "r");
+    FILE *f = fopen(PERSIST_FILE, "r");
     if (!f) return;
 
     fseek(f, 0, SEEK_END);
     long sz = ftell(f);
     rewind(f);
-    if (sz <= 0 || sz > 1024 * 1024) { fclose(f); return; }
+    if (sz <= 0 || sz > 256 * 1024) { fclose(f); return; }
 
     char *buf = malloc(sz + 1);
     if (!buf) { fclose(f); return; }
@@ -474,35 +476,35 @@ static void reload_custom_names(void) {
     int updated = 0;
     const char *p = buf;
     while ((p = strchr(p, '{')) != NULL) {
-        if (*(p+1) == '"' || *(p+1) == '\n') {
-            const char *end = strchr(p, '}');
-            if (!end) break;
-            int objlen = (int)(end - p + 1);
-            char *obj = malloc(objlen + 1);
-            if (!obj) { p = end + 1; continue; }
-            memcpy(obj, p, objlen);
-            obj[objlen] = '\0';
+        /* 跳过顶层 {"names":[ 那个大括号，只处理有 "mac" 的对象 */
+        if (*(p+1) != '"') { p++; continue; }
 
-            char mac[MAC_LEN] = "", cname[NAME_LEN] = "";
-            json_get_str(obj, "mac",         mac,   MAC_LEN);
-            json_get_str(obj, "custom_name", cname, NAME_LEN);
-            free(obj);
+        const char *end = strchr(p, '}');
+        if (!end) break;
+        int objlen = (int)(end - p + 1);
+        char *obj = malloc(objlen + 1);
+        if (!obj) { p = end + 1; continue; }
+        memcpy(obj, p, objlen);
+        obj[objlen] = '\0';
 
-            if (mac[0] != '\0') {
-                Device *d = find_device(mac);
-                if (d && strcmp(d->custom_name, cname) != 0) {
+        char mac[MAC_LEN] = "", cname[NAME_LEN] = "";
+        json_get_str(obj, "mac",         mac,   MAC_LEN);
+        json_get_str(obj, "custom_name", cname, NAME_LEN);
+        free(obj);
+
+        if (mac[0] != '\0') {
+            Device *d = find_device(mac);
+            if (d) {
+                if (strcmp(d->custom_name, cname) != 0) {
                     snprintf(d->custom_name, NAME_LEN, "%s", cname);
                     updated++;
                 }
             }
-            p = end + 1;
-        } else {
-            p++;
         }
+        p = end + 1;
     }
     free(buf);
-    if (updated > 0)
-        log_fmt("reloaded custom_names: %d device(s) updated", updated);
+    log_fmt("reload_custom_names: %d updated", updated);
 }
 
 /* ── Lock 文件 ───────────────────────────────────────────────── */
