@@ -408,36 +408,34 @@ static void load_json(const char *path) {
     /* 逐个 {} 块解析，只取 mac / name / custom_name */
     const char *p = buf;
     while ((p = strchr(p, '{')) != NULL) {
-        if (*(p+1) == '"' || *(p+1) == '\n') {
-            const char *end = strchr(p, '}');
-            if (!end) break;
+        /* ucode sprintf('%.J') 生成带缩进格式，条目形如 "  {\"mac\":..."
+         * 改为解析后以 mac 是否非空判断，而非依赖紧跟 { 的字符。 */
+        const char *end = strchr(p, '}');
+        if (!end) break;
 
-            int objlen = (int)(end - p + 1);
-            char *obj = malloc(objlen + 1);
-            if (!obj) { p = end + 1; continue; }
-            memcpy(obj, p, objlen);
-            obj[objlen] = '\0';
+        int objlen = (int)(end - p + 1);
+        char *obj = malloc(objlen + 1);
+        if (!obj) { p = end + 1; continue; }
+        memcpy(obj, p, objlen);
+        obj[objlen] = '\0';
 
-            char mac[MAC_LEN] = "", name[NAME_LEN] = "", cname[NAME_LEN] = "";
-            json_get_str(obj, "mac",         mac,   MAC_LEN);
-            json_get_str(obj, "name",        name,  NAME_LEN);
-            json_get_str(obj, "custom_name", cname, NAME_LEN);
-            free(obj);
+        char mac[MAC_LEN] = "", name[NAME_LEN] = "", cname[NAME_LEN] = "";
+        json_get_str(obj, "mac",         mac,   MAC_LEN);
+        json_get_str(obj, "name",        name,  NAME_LEN);
+        json_get_str(obj, "custom_name", cname, NAME_LEN);
+        free(obj);
 
-            if (mac[0] == '\0') { p = end + 1; continue; }
+        if (mac[0] == '\0') { p = end + 1; continue; }
 
-            /* 预填到设备表，等 scan() 时再补齐 IP/接口/状态等 */
-            Device *d = alloc_device();
-            if (!d) break;
-            snprintf(d->mac,         MAC_LEN,  "%s", mac);
-            snprintf(d->name,        NAME_LEN, "%s", name);
-            snprintf(d->custom_name, NAME_LEN, "%s", cname);
-            d->online = false;   /* 重启后一律离线，等 scan 重新判断 */
+        /* 预填到设备表，等 scan() 时再补齐 IP/接口/状态等 */
+        Device *d = alloc_device();
+        if (!d) break;
+        snprintf(d->mac,         MAC_LEN,  "%s", mac);
+        snprintf(d->name,        NAME_LEN, "%s", name);
+        snprintf(d->custom_name, NAME_LEN, "%s", cname);
+        d->online = false;   /* 重启后一律离线，等 scan 重新判断 */
 
-            p = end + 1;
-        } else {
-            p++;
-        }
+        p = end + 1;
     }
     free(buf);
     log_fmt("loaded %d name mappings from %s", g_ndev, path);
@@ -476,8 +474,10 @@ static void reload_custom_names(void) {
     int updated = 0;
     const char *p = buf;
     while ((p = strchr(p, '{')) != NULL) {
-        /* 跳过顶层 {"names":[ 那个大括号，只处理有 "mac" 的对象 */
-        if (*(p+1) != '"') { p++; continue; }
+        /* ucode sprintf('%.J') 生成带缩进的格式，条目形如 "  {\"mac\":..."
+         * 不能用 *(p+1)=='"' 过滤（p+1 是空格），改为解析后以 mac 是否非空判断。
+         * 仅跳过空对象 "{}" 避免死循环。 */
+        if (*(p+1) == '}') { p += 2; continue; }
 
         const char *end = strchr(p, '}');
         if (!end) break;
