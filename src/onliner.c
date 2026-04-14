@@ -68,6 +68,9 @@ static int     g_ndev = 0;
 static volatile sig_atomic_t g_running = 1;
 static FILE   *g_log = NULL;
 
+/* ── 前向声明 ─────────────────────────────────────────────────── */
+static void save_names(void);
+
 /* ── 工具函数 ─────────────────────────────────────────────────── */
 static void str_tolower(char *s) {
     for (; *s; s++) *s = (char)tolower((unsigned char)*s);
@@ -341,16 +344,6 @@ static bool json_get_str(const char *p, const char *key, char *out, int outsz) {
     }
     out[n] = '\0';
     return true;
-}
-
-static bool json_get_long(const char *p, const char *key, long *out) {
-    const char *kp = json_find_key(p, key);
-    if (!kp) return false;
-    kp += strlen(key) + 3;
-    while (*kp == ' ') kp++;
-    char *end;
-    *out = strtol(kp, &end, 10);
-    return end != kp;
 }
 
 /* ── 持久化：只保存 mac/name/custom_name 映射 ───────────────── */
