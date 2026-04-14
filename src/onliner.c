@@ -70,7 +70,7 @@ static volatile sig_atomic_t g_reload_names = 0;  /* SIGUSR1 触发重载 custom
 static FILE   *g_log = NULL;
 
 /* ── 前向声明 ─────────────────────────────────────────────────── */
-static void save_names(void);
+/* save_names 已不再被调用（/etc 只由 ucode 维护），保留函数体备用 */
 
 /* ── 工具函数 ─────────────────────────────────────────────────── */
 static void str_tolower(char *s) {
@@ -197,8 +197,10 @@ static void upsert_device(const char *ip, const char *mac,
             d->last_online = now;
             d->uptime      = now;
         }
-        /* 新设备入表，立即持久化主机名映射 */
-        save_names();
+        /* 新设备入表，不再写 /etc。
+         * /etc 只由 ucode set_custom_name 负责维护，
+         * C 进程只在启动时读 /etc 一次恢复 custom_name。
+         * 这样彻底避免 C 进程覆盖 ucode 写入的 custom_name。 */
     }
 }
 
@@ -347,46 +349,6 @@ static bool json_get_str(const char *p, const char *key, char *out, int outsz) {
     return true;
 }
 
-/* ── 持久化：只保存 mac/name/custom_name 映射 ───────────────── */
-/*
- * 格式：
- * {"names":[
- *   {"mac":"aa:bb:cc:dd:ee:ff","name":"iPhone","custom_name":"老爸的手机"},
- *   ...
- * ]}
- *
- * 仅在发现新 MAC 或 custom_name 变更时写入，避免频繁写 flash。
- * 运行时完整状态保存在 /tmp/onliner/devices.json（tmpfs，不受影响）。
- */
-static void save_names(void) {
-    char tmp[256];
-    snprintf(tmp, sizeof(tmp), "%s.tmp", PERSIST_FILE);
-
-    FILE *f = fopen(tmp, "w");
-    if (!f) { log_fmt("ERROR: cannot write %s: %s", tmp, strerror(errno)); return; }
-
-    fprintf(f, "{\"names\":[\n");
-    bool first = true;
-    char esc_name[NAME_LEN * 2], esc_cname[NAME_LEN * 2];
-
-    for (int i = 0; i < g_ndev; i++) {
-        Device *d = &g_devs[i];
-        if (!d->used) continue;
-        if (!first) fprintf(f, ",\n");
-        first = false;
-        json_escape(esc_name,  sizeof(esc_name),  d->name);
-        json_escape(esc_cname, sizeof(esc_cname), d->custom_name);
-        fprintf(f, "  {\"mac\":\"%s\",\"name\":\"%s\",\"custom_name\":\"%s\"}",
-                d->mac, esc_name, esc_cname);
-    }
-    fprintf(f, "\n]}\n");
-    fclose(f);
-
-    if (rename(tmp, PERSIST_FILE) != 0)
-        log_fmt("ERROR: rename %s -> %s: %s", tmp, PERSIST_FILE, strerror(errno));
-    else
-        log_fmt("names saved (%d devices)", g_ndev);
-}
 
 /* ── 启动时加载主机名映射，恢复 name/custom_name ────────────── */
 static void load_json(const char *path) {
